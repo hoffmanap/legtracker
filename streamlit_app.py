@@ -3,109 +3,82 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="National Housing Reform Tracker",
-    page_icon="🏗️",
-    layout="wide"
-)
+# 1. Setup
+st.set_page_config(page_title="Housing Reform Tracker", layout="wide", page_icon="🏘️")
 
-# 2. Load Data
-@st.cache_data(ttl=3600) # Refreshes cache every hour
+@st.cache_data(ttl=3600)
 def load_data():
-    try:
-        df = pd.read_csv('legislation_master.csv')
-        # Ensure coordinates are numeric
-        df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
-        df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
-        return df.dropna(subset=['Lat', 'Lon'])
-    except Exception as e:
-        st.error(f"Error loading CSV: {e}")
-        return pd.DataFrame()
+    df = pd.read_csv('legislation_master.csv')
+    df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
+    df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
+    return df.dropna(subset=['Lat', 'Lon'])
 
+# 2. Sidebar & Navigation
+st.sidebar.header("Filter Results")
 df = load_data()
 
-# 3. Sidebar Filters
-st.sidebar.title("🔍 Filter Radar")
-st.sidebar.markdown("Track zoning, building codes, and permitting reform.")
+# Filter by State
+states = sorted(df['State'].unique())
+selected_states = st.sidebar.multiselect("Select States", states, default=states)
 
-if not df.empty:
-    all_themes = sorted(df['Theme'].unique())
-    selected_themes = st.sidebar.multiselect("Reform Themes", all_themes, default=all_themes)
+# Filter by Theme
+themes = sorted(df['Theme'].unique())
+selected_themes = st.sidebar.multiselect("Reform Themes", themes, default=themes)
 
-    all_statuses = sorted(df['Status'].unique())
-    selected_status = st.sidebar.multiselect("Legislation Status", all_statuses, default=all_statuses)
+# Apply Filters
+filtered_df = df[
+    (df['State'].isin(selected_states)) & 
+    (df['Theme'].isin(selected_themes))
+]
 
-    # Filter Dataframe
-    mask = df['Theme'].isin(selected_themes) & df['Status'].isin(selected_status)
-    filtered_df = df[mask]
-else:
-    filtered_df = df
+# 3. UI Header
+st.title("🏗️ State & Local Housing Reform Radar")
+st.write(f"Tracking **{len(filtered_df)}** pro-housing initiatives across the US.")
 
-# 4. Main UI
-st.title("🏗️ National Housing Reform Dashboard")
-st.markdown(f"**Last Update:** {pd.Timestamp.now().strftime('%Y-%m-%d')} (via GitHub Actions)")
-
-# Top Metrics
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Bills/Items", len(filtered_df))
-col2.metric("States Active", filtered_df['State'].nunique() if not filtered_df.empty else 0)
-col3.metric("Enacted Laws", len(filtered_df[filtered_df['Status'] == 'Enacted']))
-
-# 5. Interactive Leaflet Map
-st.subheader("🗺️ Geographic Reform Map")
+# 4. The Map
+st.subheader("Geographic Reach")
 if not filtered_df.empty:
-    # Center map on the average of filtered coordinates
-    m = folium.Map(
-        location=[filtered_df['Lat'].mean(), filtered_df['Lon'].mean()], 
-        zoom_start=4, 
-        tiles="CartoDB positron"
-    )
-
-    for i, row in filtered_df.iterrows():
-        # Color code: Green for Enacted, Orange for Active/Proposed
-        color = "green" if row['Status'] == 'Enacted' else "orange"
+    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB Positron")
+    
+    for _, row in filtered_df.iterrows():
+        color = "green" if row['Status'] == "Enacted" else "blue"
+        location_text = f"{row['City']}, {row['State']}" if row['City'] != "Statewide" else f"{row['State']} (Statewide)"
         
-        popup_html = f"""
-            <div style="font-family: sans-serif; font-size: 12px;">
-                <h4 style="margin-bottom:5px;">{row['State']}: {row['Identifier']}</h4>
+        popup_content = f"""
+            <div style="font-family: Arial; font-size: 13px; width: 200px;">
+                <h5 style="margin:0;">{location_text}</h5>
+                <hr style="margin:5px 0;">
                 <b>Theme:</b> {row['Theme']}<br>
                 <b>Status:</b> {row['Status']}<br>
-                <p>{row['Summary']}</p>
-                <a href="{row['Link']}" target="_blank" style="color: blue;">View Full Legislation</a>
+                <p style="margin-top:5px;">{row['Summary']}</p>
+                <a href="{row['Link']}" target="_blank">View Official Source</a>
             </div>
         """
         
         folium.CircleMarker(
             location=[row['Lat'], row['Lon']],
-            radius=9,
+            radius=8,
             color=color,
             fill=True,
-            fill_opacity=0.7,
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{row['State']}: {row['Identifier']}"
+            fill_opacity=0.6,
+            popup=folium.Popup(popup_content, max_width=250),
+            tooltip=location_text
         ).add_to(m)
-
+    
     st_folium(m, width="100%", height=500)
+
+# 5. The Searchable Table
+st.subheader("Legislative Records")
+search = st.text_input("🔍 Search by City, State, or Keyword (e.g. 'El Paso' or 'Lot Split')")
+
+if search:
+    table_df = filtered_df[filtered_df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
 else:
-    st.warning("No data found for the selected filters.")
-
-# 6. Searchable Database Table
-st.subheader("📑 Detailed Legislation Database")
-search_query = st.text_input("Search by keyword (e.g., 'ADU', 'Texas', 'Single-Stair')")
-
-if search_query:
-    filtered_df = filtered_df[
-        filtered_df.apply(lambda row: search_query.lower() in row.astype(str).str.lower().values, axis=1)
-    ]
+    table_df = filtered_df
 
 st.dataframe(
-    filtered_df,
-    column_config={
-        "Link": st.column_config.LinkColumn("Resource Link"),
-        "Lat": None, # Hide coordinates from table
-        "Lon": None
-    },
-    hide_index=True,
-    use_container_width=True
+    table_df[['State', 'City', 'Identifier', 'Theme', 'Status', 'Summary', 'Link', 'Source']],
+    column_config={"Link": st.column_config.LinkColumn("Link")},
+    use_container_width=True,
+    hide_index=True
 )
