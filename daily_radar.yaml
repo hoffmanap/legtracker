@@ -1,0 +1,36 @@
+name: Daily Housing Radar Sweep
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 6:00 AM UTC Daily
+  workflow_dispatch:      # Allows manual trigger for testing
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas pylegiscan requests
+
+      - name: Run Scraper
+        env:
+          LEGISCAN_API_KEY: ${{ secrets.LEGISCAN_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+        run: python radar_sweep.py
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name 'Housing-Radar-Bot'
+          git config --global user.email 'bot@hoffman.ai'
+          git add legislation_master.csv
+          git commit -m "Daily Radar Update: $(date)"
+          git push
