@@ -2,12 +2,17 @@ name: Daily Housing Radar Sweep
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # 6:00 AM UTC Daily
-  workflow_dispatch:      # Allows manual trigger for testing
+    - cron: '0 6 * * *'  # Runs at 6:00 AM UTC daily
+  workflow_dispatch:      # Allows you to click the "Run workflow" button manually
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # This block is CRITICAL for fixing the Permission Denied (403) error
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -32,5 +37,5 @@ jobs:
           git config --global user.name 'Housing-Radar-Bot'
           git config --global user.email 'bot@hoffman.ai'
           git add legislation_master.csv
-          git commit -m "Daily Radar Update: $(date)"
-          git push
+          # Only commit if there are actually changes to avoid errors
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Daily Radar Update: $(date)" && git push)
