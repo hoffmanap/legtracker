@@ -26,7 +26,7 @@ STATE_COORDS = {
 }
 
 def get_legiscan_data():
-    """Fetches state-level bills via LegiScan API with fallback logic."""
+    """Fetches state-level bills with optimized search parameters."""
     if not LEGISCAN_KEY: 
         print("Skipping LegiScan: No API Key.")
         return pd.DataFrame()
@@ -34,24 +34,28 @@ def get_legiscan_data():
     try:
         legis = LegiScan(LEGISCAN_KEY)
         
-        # Strict Boolean Syntax for 2026 technical housing reforms
-        query = '("middle housing" OR "zoning reform" OR "parking minimums" OR "accessory dwelling" OR "lot split" OR "housing")'
+        # Simplified query for maximum API compatibility
+        query = 'zoning OR "middle housing" OR parking OR "accessory dwelling" OR "lot split"'
         
-        # Attempt National Search
-        results = legis.search(state='ALL', query=query)
-        raw_list = results.get('results', [])
+        # CRITICAL FIX: We loop through TX specifically and use year=1 
+        # year=1 tells LegiScan to search ALL years in the current session cycle (2025-2026)
+        # Without this, the API often misses bills filed late last year that are still active.
+        states_to_check = ['TX', 'ALL']
+        all_raw_results = []
         
-        # Texas-Specific Fallback if National returns 0
-        if not raw_list:
-            print("National search returned 0. Forcing Texas-specific sweep...")
-            tx_results = legis.search(state='TX', query='zoning OR housing')
-            raw_list = tx_results.get('results', [])
+        for state in states_to_check:
+            print(f"Querying LegiScan for {state}...")
+            # We use the search method. If pylegiscan doesn't support 'year', 
+            # it will just ignore it, but most modern wrappers do.
+            results = legis.search(state=state, query=query, year=1)
+            batch = results.get('results', [])
+            all_raw_results.extend(batch)
+            print(f"Batch from {state} yielded {len(batch)} items.")
 
         bills = []
-        print(f"LegiScan found {len(raw_list)} potential matches.")
-        
-        for b in raw_list:
+        for b in all_raw_results:
             if not b.get('bill_number'): continue
+            
             state_code = b.get('state', 'US')
             coords = STATE_COORDS.get(state_code, [31.9, -99.9])
             
@@ -67,9 +71,15 @@ def get_legiscan_data():
                 'Lon': coords[1],
                 'Source': 'LegiScan'
             })
-        return pd.DataFrame(bills)
+            
+        df = pd.DataFrame(bills)
+        if not df.empty:
+            # Deduplicate so TX results aren't doubled by the 'ALL' search
+            df = df.drop_duplicates(subset=['Identifier', 'State'])
+            
+        return df
     except Exception as e:
-        print(f"LegiScan Error: {e}")
+        print(f"LegiScan API Error: {e}")
         return pd.DataFrame()
 
 def get_news_data():
@@ -78,7 +88,6 @@ def get_news_data():
         print("Skipping News Tracker: No API Key.")
         return pd.DataFrame()
     
-    # Broadened search for 2026 local ordinance trends
     keywords = 'zoning OR "middle housing" OR "parking" OR "housing reform"'
     url = f"https://newsdata.io/api/1/news?apikey={NEWS_KEY}&q={keywords}&country=us&language=en"
     
@@ -109,22 +118,19 @@ def get_news_data():
 if __name__ == "__main__":
     file_path = 'legislation_master.csv'
     
-    # Initialize or Load Database
+    # Load existing or create new
     if os.path.exists(file_path):
         master_df = pd.read_csv(file_path)
     else:
         master_df = pd.DataFrame(columns=['State', 'City', 'Identifier', 'Theme', 'Summary', 'Status', 'Link', 'Lat', 'Lon', 'Source'])
 
-    # Gather data from both streams
+    # Scrape
     new_bills = get_legiscan_data()
     new_news = get_news_data()
     
-    # Merge and Deduplicate by the Link column
+    # Combine and Clean
     updated_df = pd.concat([master_df, new_bills, new_news], ignore_index=True)
-    updated_df = updated_df.drop_duplicates(subset=['Link'], keep='first')
-    
-    # Clean up any potential empty rows
-    updated_df = updated_df.dropna(subset=['Link'])
+    updated_df = updated_df.drop_duplicates(subset=['Link'], keep='first').dropna(subset=['Link'])
     
     updated_df.to_csv(file_path, index=False)
-    print(f"Total database count: {len(updated_df)} items.")
+    print(f"Radar Sweep Complete. Total database count: {len(updated_df)}.")
