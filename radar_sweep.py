@@ -2,94 +2,108 @@ import os
 import pandas as pd
 import requests
 
-# 1. Robust Import Logic
-try:
-    from pylegiscan.api import LegiScan
-except ImportError:
-    try:
-        from pylegiscan import LegiScan
-    except ImportError:
-        class LegiScan:
-            def __init__(self, key): self.key = key
-            def search(self, **kwargs): return {"results": []}
-
+# 1. Configuration
 LEGISCAN_KEY = os.getenv('LEGISCAN_API_KEY')
 NEWS_KEY = os.getenv('NEWS_API_KEY')
 
+# Add or remove states here as needed
+TARGET_STATES = ['TX', 'CA', 'IL', 'MT', 'WA', 'OR']
+
+# Center points for the map markers
 STATE_COORDS = {
-    'AL': [32.3, -86.9], 'AZ': [34.0, -111.1], 'CA': [36.8, -119.4],
-    'CO': [39.6, -105.8], 'FL': [27.7, -81.5], 'GA': [32.2, -82.9],
-    'MN': [46.7, -94.7], 'NC': [35.8, -79.0], 'NY': [40.7, -74.0],
-    'TX': [31.9, -99.9], 'WA': [47.8, -120.7], 'PR': [18.2, -66.6]
+    'TX': [31.9686, -99.9018], 'CA': [36.7783, -119.4179], 'IL': [40.6331, -89.3985],
+    'MT': [46.8797, -110.3626], 'WA': [47.7511, -120.7401], 'OR': [43.8041, -120.5542]
 }
 
-def get_legiscan_data():
+def fetch_legiscan_master_list(state):
+    """Pulls and filters the full master list for a specific state session."""
     if not LEGISCAN_KEY: return pd.DataFrame()
+    
+    # Step 1: Get the current session ID for the state
+    list_url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getDatasetList&state={state}"
     try:
-        legis = LegiScan(LEGISCAN_KEY)
-        # Simplified query to match the broad results you saw on the web
-        query = 'zoning OR "middle housing" OR parking OR "lot split"'
+        session_res = requests.get(list_url).json()
+        if 'datasetlist' not in session_res:
+            print(f"Could not find session list for {state}")
+            return pd.DataFrame()
+            
+        # We grab the most recent session (index 0)
+        latest_session = session_res['datasetlist'][0]['session_id']
         
-        all_bills = []
-        # We check TX specifically first, then ALL states
-        for target_state in ['TX', 'ALL']:
-            print(f"Deep Scanning LegiScan for {target_state}...")
-            # 'year=1' is the magic fix. It tells the API to ignore the 2026 filter 
-            # and look at the entire 2025-2026 biennium session.
-            results = legis.search(state=target_state, query=query, year=1)
+        # Step 2: Pull the Master List for that session
+        master_url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&id={latest_session}"
+        master_data = requests.get(master_url).json()
+        
+        bills = []
+        # Keywords for local filtering
+        keywords = ['zoning', 'housing', 'parking', 'lot split', 'middle housing', 'adu', 'accessory dwelling']
+        
+        for idx in master_data.get('masterlist', {}):
+            if idx == 'session': continue
+            bill = master_data['masterlist'][idx]
             
-            raw_list = results.get('results', [])
-            print(f"Found {len(raw_list)} items in {target_state}.")
+            title = bill.get('title', '').lower()
+            desc = bill.get('description', '').lower()
             
-            for b in raw_list:
-                if 'bill_number' not in b: continue
-                s_code = b.get('state', 'US')
-                all_bills.append({
-                    'State': s_code,
+            # If any keyword matches, we save it
+            if any(k in title or k in desc for k in keywords):
+                bills.append({
+                    'State': state,
                     'City': 'Statewide',
-                    'Identifier': b.get('bill_number'),
-                    'Theme': 'Zoning/Land Use',
-                    'Summary': b.get('title', 'No Title'),
-                    'Status': 'Active',
-                    'Link': b.get('url', ''),
-                    'Lat': STATE_COORDS.get(s_code, [39.8, -98.5])[0],
-                    'Lon': STATE_COORDS.get(s_code, [39.8, -98.5])[1],
-                    'Source': f'LegiScan ({target_state})'
+                    'Identifier': bill.get('number'),
+                    'Theme': 'Housing/Zoning',
+                    'Summary': bill.get('title'),
+                    'Status': bill.get('last_action', 'Active'),
+                    'Link': bill.get('url'),
+                    'Lat': STATE_COORDS.get(state, [39.8, -98.5])[0],
+                    'Lon': STATE_COORDS.get(state, [39.8, -98.5])[1],
+                    'Source': f'LegiScan {state}'
                 })
-        
-        df = pd.DataFrame(all_bills)
-        return df.drop_duplicates(subset=['Identifier', 'State']) if not df.empty else df
+        print(f"✅ {state}: Processed session {latest_session}, found {len(bills)} matches.")
+        return pd.DataFrame(bills)
     except Exception as e:
-        print(f"LegiScan Error: {e}")
+        print(f"❌ Error processing {state}: {e}")
         return pd.DataFrame()
 
 def get_news_data():
+    """Generic US news sweep for housing reform."""
     if not NEWS_KEY: return pd.DataFrame()
-    url = f"https://newsdata.io/api/1/news?apikey={NEWS_KEY}&q=zoning%20OR%20housing%20reform&country=us&language=en"
+    query = 'zoning OR "middle housing" OR "parking reform"'
+    url = f"https://newsdata.io/api/1/news?apikey={NEWS_KEY}&q={query}&country=us&language=en"
     try:
-        response = requests.get(url).json()
+        res = requests.get(url).json()
         news = []
-        for art in response.get('results', []):
+        for art in res.get('results', []):
             news.append({
-                'State': 'US', 'City': art.get('ai_region', 'Local/Multiple'),
-                'Identifier': 'News Alert', 'Theme': 'Local Reform',
-                'Summary': art.get('title', ''), 'Status': 'Proposed',
-                'Link': art.get('link', ''), 'Lat': 39.8, 'Lon': -98.5, 'Source': 'News Tracker'
+                'State': 'US', 'City': art.get('ai_region', 'Local'),
+                'Identifier': 'News', 'Theme': 'Proposed', 'Summary': art.get('title'),
+                'Status': 'Proposed', 'Link': art.get('link'), 'Lat': 39.8, 'Lon': -98.5, 'Source': 'News'
             })
         return pd.DataFrame(news)
-    except Exception as e:
-        print(f"News Error: {e}")
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 if __name__ == "__main__":
     file_path = 'legislation_master.csv'
-    master_df = pd.read_csv(file_path) if os.path.exists(file_path) else pd.DataFrame(columns=['State', 'City', 'Identifier', 'Theme', 'Summary', 'Status', 'Link', 'Lat', 'Lon', 'Source'])
-
-    new_data = pd.concat([get_legiscan_data(), get_news_data()], ignore_index=True)
     
-    # Merge with existing, keeping the newest info
-    final_df = pd.concat([master_df, new_data], ignore_index=True)
-    final_df = final_df.drop_duplicates(subset=['Link'], keep='first').dropna(subset=['Link'])
+    # 1. Loop through all target states
+    all_new_data = []
+    for state in TARGET_STATES:
+        state_df = fetch_legiscan_master_list(state)
+        all_new_data.append(state_df)
     
+    # 2. Add News
+    all_new_data.append(get_news_data())
+    
+    # 3. Combine everything
+    new_data_combined = pd.concat(all_new_data, ignore_index=True)
+    
+    if os.path.exists(file_path):
+        master_df = pd.read_csv(file_path)
+        final_df = pd.concat([master_df, new_data_combined], ignore_index=True)
+    else:
+        final_df = new_data_combined
+        
+    # Deduplicate and Save
+    final_df = final_df.drop_duplicates(subset=['Link']).dropna(subset=['Link'])
     final_df.to_csv(file_path, index=False)
-    print(f"Done. Database now contains {len(final_df)} records.")
+    print(f"--- Sweep Complete: {len(final_df)} total items in database ---")
