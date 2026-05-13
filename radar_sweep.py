@@ -6,7 +6,6 @@ import time
 # 1. Configuration & API Keys
 LEGISCAN_KEY = os.getenv('LEGISCAN_API_KEY')
 
-# Use your existing dictionary as the master list of jurisdictions to scan
 STATE_COORDS = {
     'AL': [32.806671, -86.79113], 'AK': [61.370716, -152.404419], 'AZ': [33.729759, -111.431221],
     'AR': [34.969704, -92.373123], 'CA': [36.116203, -119.681564], 'CO': [39.059811, -105.311104],
@@ -28,11 +27,27 @@ STATE_COORDS = {
     'PR': [18.220800, -66.590100]
 }
 
+def categorize_theme(content):
+    """Assigns specific policy nuance based on keywords."""
+    content = content.lower()
+    if 'accessory dwelling' in content or 'adu' in content:
+        return 'ADU Reform'
+    if 'lot split' in content or 'subdivision' in content:
+        return 'Administrative Lot Splits'
+    if 'parking' in content:
+        return 'Parking Minimums'
+    if 'building code' in content or 'technical code' in content:
+        return 'Building Code Adjustments'
+    if 'transit oriented' in content or 'tod' in content:
+        return 'Transit-Oriented Development'
+    if 'middle housing' in content or 'duplex' in content or 'triplex' in content:
+        return 'Middle Housing'
+    return 'General Zoning/Housing'
+
 def fetch_by_state(state_code):
-    """Fetches the Master List for a state directly by its 2-letter code."""
-    # This operation uses getMasterList with state instead of session_id
     url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&state={state_code}"
     bills = []
+    # Keywords that trigger the capture of the bill
     keywords = [
         'zoning', 'accessory dwelling', 'adu', 'lot split', 
         'middle housing', 'parking', 'building code', 'density'
@@ -40,23 +55,23 @@ def fetch_by_state(state_code):
     
     try:
         res = requests.get(url).json()
-        if res.get('status') == 'ERROR':
-            print(f"  LegiScan Error for {state_code}: {res.get('alert', {}).get('message')}")
-            return []
-            
         masterlist = res.get('masterlist', {})
         for idx in masterlist:
             if idx == 'session': continue
             item = masterlist[idx]
-            content = f"{item.get('title', '')} {item.get('description', '')}".lower()
+            
+            title = item.get('title', '')
+            desc = item.get('description', '')
+            content = f"{title} {desc}".lower()
             
             if any(k in content for k in keywords):
                 coords = STATE_COORDS.get(state_code)
                 bills.append({
                     'State': state_code,
                     'Identifier': item.get('number'),
-                    'Theme': 'Housing Policy',
-                    'Summary': item.get('title'),
+                    # Apply the nuance function here
+                    'Theme': categorize_theme(content),
+                    'Summary': title,
                     'Status': item.get('last_action', 'Active'),
                     'Link': item.get('url'),
                     'Lat': coords[0],
@@ -65,32 +80,28 @@ def fetch_by_state(state_code):
                 })
         return bills
     except Exception as e:
-        print(f"  Connection Error for {state_code}: {e}")
+        print(f"  Error for {state_code}: {e}")
         return []
 
 if __name__ == "__main__":
     if not LEGISCAN_KEY:
-        print("CRITICAL: LEGISCAN_API_KEY secret is missing.")
+        print("CRITICAL: LEGISCAN_API_KEY is missing.")
         exit(1)
 
     file_path = 'legislation_master.csv'
     all_rows = []
     
-    print(f"Starting national sweep for {len(STATE_COORDS)} states/territories...")
-    
+    print(f"Starting national sweep for {len(STATE_COORDS)} jurisdictions...")
     for state in STATE_COORDS.keys():
         print(f"Scanning {state}...")
         found = fetch_by_state(state)
         if found:
-            print(f"  --> Success: {len(found)} matches.")
+            print(f"  --> Success: Found {len(found)} relevant bills.")
             all_rows.extend(found)
-        # Slower rate limit (0.5s) to be safe with the public API
         time.sleep(0.5)
     
     if all_rows:
         new_df = pd.DataFrame(all_rows)
-        # Drop duplicates based on the link (URL is the most unique identifier)
+        # Sort and save
         new_df.drop_duplicates(subset=['Link']).to_csv(file_path, index=False)
-        print(f"\n✅ SWEEP COMPLETE: Wrote {len(new_df)} bills to {file_path}")
-    else:
-        print("\n❌ FAILED: No matches found in any state. Check keywords or API Key.")
+        print(f"\n✅ SWEEP COMPLETE: Wrote {len(new_df)} bills with nuanced themes.")
