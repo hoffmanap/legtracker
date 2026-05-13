@@ -6,7 +6,7 @@ import time
 # 1. Configuration & API Keys
 LEGISCAN_KEY = os.getenv('LEGISCAN_API_KEY')
 
-# Expanded Coordinate Mapping for all 50 States + DC & PR
+# Standard center points for all states
 STATE_COORDS = {
     'AL': [32.806671, -86.79113], 'AK': [61.370716, -152.404419], 'AZ': [33.729759, -111.431221],
     'AR': [34.969704, -92.373123], 'CA': [36.116203, -119.681564], 'CO': [39.059811, -105.311104],
@@ -28,26 +28,10 @@ STATE_COORDS = {
     'PR': [18.220800, -66.590100]
 }
 
-def categorize_theme(content):
-    """Assigns a policy theme based on bill text."""
-    content = content.lower()
-    if 'accessory dwelling' in content or 'adu' in content:
-        return 'ADU Reform'
-    if 'parking' in content:
-        return 'Parking Reform'
-    if 'lot split' in content:
-        return 'Lot Splitting'
-    if 'transit oriented' in content or 'tod' in content:
-        return 'Transit-Oriented Development'
-    if 'middle housing' in content or 'duplex' in content or 'triplex' in content:
-        return 'Middle Housing'
-    if 'rent control' in content or 'rent stabilization' in content:
-        return 'Rent Regulation'
-    return 'General Zoning/Housing'
-
 def get_all_state_sessions():
-    """Fetches the latest session ID for every available state/jurisdiction."""
-    if not LEGISCAN_KEY: return {}
+    if not LEGISCAN_KEY:
+        print("CRITICAL: LEGISCAN_API_KEY is missing from environment secrets.")
+        return {}
     url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getDatasetList"
     try:
         res = requests.get(url).json()
@@ -63,35 +47,24 @@ def get_all_state_sessions():
         return {}
 
 def fetch_legiscan_master_list(state, session_id):
-    """Pulls and filters master list using precise coordinate and theme mapping."""
     url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&id={session_id}"
     bills = []
-    # Broadened keywords to ensure all 50 states have a better chance of matching
-    keywords = [
-        'zoning', 'accessory dwelling', 'adu', 'lot split', 
-        'middle housing', 'parking minimum', 'building code',
-        'residential density', 'transit oriented', 'floor area ratio',
-        'affordable housing', 'land use', 'residential development'
-    ]
-    
+    keywords = ['zoning', 'accessory dwelling', 'adu', 'lot split', 'middle housing', 
+                'parking', 'building code', 'density', 'transit oriented']
     try:
         res = requests.get(url).json()
         masterlist = res.get('masterlist', {})
         for idx in masterlist:
             if idx == 'session': continue
             item = masterlist[idx]
-            
-            title = item.get('title', '')
-            description = item.get('description', '')
-            content = f"{title} {description}".lower()
-            
+            content = f"{item.get('title', '')} {item.get('description', '')}".lower()
             if any(k in content for k in keywords):
                 coords = STATE_COORDS.get(state, [39.8283, -98.5795])
                 bills.append({
                     'State': state,
                     'Identifier': item.get('number'),
-                    'Theme': categorize_theme(content),
-                    'Summary': title,
+                    'Theme': 'Housing Policy',
+                    'Summary': item.get('title'),
                     'Status': item.get('last_action', 'Active'),
                     'Link': item.get('url'),
                     'Lat': coords[0],
@@ -100,36 +73,27 @@ def fetch_legiscan_master_list(state, session_id):
                 })
         return bills
     except Exception as e:
-        print(f"Error processing {state}: {e}")
+        print(f"Warning: Could not process {state}: {e}")
         return []
 
 if __name__ == "__main__":
     file_path = 'legislation_master.csv'
     session_map = get_all_state_sessions()
-    print(f"Starting national sweep. Targeting {len(session_map)} jurisdictions.")
+    print(f"Session Map generated. Found {len(session_map)} jurisdictions.")
     
-    all_new_data = []
+    all_rows = []
     for state, s_id in session_map.items():
-        print(f"Scanning {state} (Session {s_id})...")
-        state_bills = fetch_legiscan_master_list(state, s_id)
-        if state_bills:
-            all_new_data.append(pd.DataFrame(state_bills))
-        # Rate limit compliance
-        time.sleep(0.25)
+        print(f"Checking {state}...")
+        found_bills = fetch_legiscan_master_list(state, s_id)
+        if found_bills:
+            print(f"  --> Found {len(found_bills)} bills in {state}")
+            all_rows.extend(found_bills)
+        time.sleep(0.2)
     
-    if all_new_data:
-        new_df = pd.concat(all_new_data, ignore_index=True)
-        # If running as a monthly sweep, we overwrite to keep statuses fresh
-        # or merge if you want to keep historical dead bills.
-        # For now, we will merge and deduplicate.
-        if os.path.exists(file_path):
-            existing_df = pd.read_csv(file_path)
-            final_df = pd.concat([existing_df, new_df], ignore_index=True)
-        else:
-            final_df = new_df
-            
-        final_df = final_df.drop_duplicates(subset=['Link']).dropna(subset=['Link'])
-        final_df.to_csv(file_path, index=False)
-        print(f"Sweep Complete: {len(final_df)} total items tracked.")
+    if all_rows:
+        new_df = pd.DataFrame(all_rows)
+        # We save a completely fresh file to ensure the national sweep is captured
+        new_df.drop_duplicates(subset=['Link']).to_csv(file_path, index=False)
+        print(f"SUCCESS: Wrote {len(new_df)} bills to {file_path}")
     else:
-        print("No matches found across any jurisdiction.")
+        print("No bills matched keywords in any state.")
