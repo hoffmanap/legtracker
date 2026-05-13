@@ -28,6 +28,23 @@ STATE_COORDS = {
     'PR': [18.220800, -66.590100]
 }
 
+def categorize_theme(content):
+    """Assigns a policy theme based on bill text."""
+    content = content.lower()
+    if 'accessory dwelling' in content or 'adu' in content:
+        return 'ADU Reform'
+    if 'parking' in content:
+        return 'Parking Reform'
+    if 'lot split' in content:
+        return 'Lot Splitting'
+    if 'transit oriented' in content or 'tod' in content:
+        return 'Transit-Oriented Development'
+    if 'middle housing' in content or 'duplex' in content or 'triplex' in content:
+        return 'Middle Housing'
+    if 'rent control' in content or 'rent stabilization' in content:
+        return 'Rent Regulation'
+    return 'General Zoning/Housing'
+
 def get_all_state_sessions():
     """Fetches the latest session ID for every available state/jurisdiction."""
     if not LEGISCAN_KEY: return {}
@@ -46,11 +63,16 @@ def get_all_state_sessions():
         return {}
 
 def fetch_legiscan_master_list(state, session_id):
-    """Pulls and filters master list using precise coordinate mapping."""
+    """Pulls and filters master list using precise coordinate and theme mapping."""
     url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&id={session_id}"
     bills = []
-    keywords = ['zoning', 'accessory dwelling', 'adu', 'lot split', 'middle housing', 
-                'parking minimum', 'building code', 'density', 'transit oriented']
+    # Broadened keywords to ensure all 50 states have a better chance of matching
+    keywords = [
+        'zoning', 'accessory dwelling', 'adu', 'lot split', 
+        'middle housing', 'parking minimum', 'building code',
+        'residential density', 'transit oriented', 'floor area ratio',
+        'affordable housing', 'land use', 'residential development'
+    ]
     
     try:
         res = requests.get(url).json()
@@ -58,14 +80,18 @@ def fetch_legiscan_master_list(state, session_id):
         for idx in masterlist:
             if idx == 'session': continue
             item = masterlist[idx]
-            content = f"{item.get('title', '')} {item.get('description', '')}".lower()
+            
+            title = item.get('title', '')
+            description = item.get('description', '')
+            content = f"{title} {description}".lower()
+            
             if any(k in content for k in keywords):
                 coords = STATE_COORDS.get(state, [39.8283, -98.5795])
                 bills.append({
                     'State': state,
                     'Identifier': item.get('number'),
-                    'Theme': 'Housing & Zoning Policy',
-                    'Summary': item.get('title'),
+                    'Theme': categorize_theme(content),
+                    'Summary': title,
                     'Status': item.get('last_action', 'Active'),
                     'Link': item.get('url'),
                     'Lat': coords[0],
@@ -88,17 +114,22 @@ if __name__ == "__main__":
         state_bills = fetch_legiscan_master_list(state, s_id)
         if state_bills:
             all_new_data.append(pd.DataFrame(state_bills))
-        time.sleep(0.2)
+        # Rate limit compliance
+        time.sleep(0.25)
     
     if all_new_data:
         new_df = pd.concat(all_new_data, ignore_index=True)
+        # If running as a monthly sweep, we overwrite to keep statuses fresh
+        # or merge if you want to keep historical dead bills.
+        # For now, we will merge and deduplicate.
         if os.path.exists(file_path):
             existing_df = pd.read_csv(file_path)
             final_df = pd.concat([existing_df, new_df], ignore_index=True)
         else:
             final_df = new_df
+            
         final_df = final_df.drop_duplicates(subset=['Link']).dropna(subset=['Link'])
         final_df.to_csv(file_path, index=False)
         print(f"Sweep Complete: {len(final_df)} total items tracked.")
     else:
-        print("No new relevant bills found.")
+        print("No matches found across any jurisdiction.")
