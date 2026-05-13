@@ -3,82 +3,76 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 
-# 1. Setup
-st.set_page_config(page_title="Housing Reform Tracker", layout="wide", page_icon="🏘️")
+# 1. Page Configuration
+st.set_page_config(
+    page_title="National Housing Policy Radar",
+    page_icon="🏠",
+    layout="wide"
+)
 
-@st.cache_data(ttl=3600)
+# 2. Load Data
+@st.cache_data
 def load_data():
-    df = pd.read_csv('legislation_master.csv')
-    df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
-    df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
-    return df.dropna(subset=['Lat', 'Lon'])
+    try:
+        df = pd.read_csv('legislation_master.csv')
+        # Ensure coordinates are numeric
+        df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
+        df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
+        return df.dropna(subset=['Lat', 'Lon'])
+    except FileNotFoundError:
+        return pd.DataFrame(columns=['State', 'Identifier', 'Theme', 'Summary', 'Status', 'Link', 'Lat', 'Lon', 'Source'])
 
-# 2. Sidebar & Navigation
-st.sidebar.header("Filter Results")
 df = load_data()
 
-# Filter by State
-states = sorted(df['State'].unique())
-selected_states = st.sidebar.multiselect("Select States", states, default=states)
+# 3. Sidebar Filters
+st.sidebar.title("Search & Filters")
+st.sidebar.markdown("Filter the national database by state, status, or keyword.")
 
-# Filter by Theme
-themes = sorted(df['Theme'].unique())
-selected_themes = st.sidebar.multiselect("Reform Themes", themes, default=themes)
+# Keyword Search
+search_query = st.sidebar.text_input("Search Summary or Identifier", "")
 
-# Apply Filters
+# State Multi-select
+all_states = sorted(df['State'].unique().tolist())
+selected_states = st.sidebar.multiselect("Select States", options=all_states, default=all_states)
+
+# Status Multi-select (The requested update)
+all_statuses = sorted(df['Status'].unique().astype(str).tolist())
+selected_statuses = st.sidebar.multiselect("Select Bill Status", options=all_statuses, default=all_statuses)
+
+# 4. Filter Logic
 filtered_df = df[
-    (df['State'].isin(selected_states)) & 
-    (df['Theme'].isin(selected_themes))
+    (df['State'].isin(selected_states)) &
+    (df['Status'].isin(selected_statuses))
 ]
 
-# 3. UI Header
-st.title("🏗️ State & Local Housing Reform Radar")
-st.write(f"Tracking **{len(filtered_df)}** pro-housing initiatives across the US.")
+if search_query:
+    filtered_df = filtered_df[
+        filtered_df['Summary'].str.contains(search_query, case=False, na=False) |
+        filtered_df['Identifier'].str.contains(search_query, case=False, na=False)
+    ]
 
-# 4. The Map
-st.subheader("Geographic Reach")
+# 5. Main Dashboard Layout
+st.title("🏠 Housing & Zoning Policy Radar")
+st.markdown(f"Currently tracking **{len(filtered_df)}** relevant bills across selected filters.")
+
+# Metrics Row
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("States Represented", len(filtered_df['State'].unique()))
+with col2:
+    st.metric("Total Items", len(filtered_df))
+with col3:
+    st.metric("Most Common Status", filtered_df['Status'].value_counts().idxmax() if not filtered_df.empty else "N/A")
+
+# 6. The Map
+st.subheader("Geospatial View")
 if not filtered_df.empty:
-    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB Positron")
+    # Center map on the average coordinates of the filtered set
+    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="cartodbpositron")
     
     for _, row in filtered_df.iterrows():
-        color = "green" if row['Status'] == "Enacted" else "blue"
-        location_text = f"{row['City']}, {row['State']}" if row['City'] != "Statewide" else f"{row['State']} (Statewide)"
-        
         popup_content = f"""
-            <div style="font-family: Arial; font-size: 13px; width: 200px;">
-                <h5 style="margin:0;">{location_text}</h5>
-                <hr style="margin:5px 0;">
-                <b>Theme:</b> {row['Theme']}<br>
-                <b>Status:</b> {row['Status']}<br>
-                <p style="margin-top:5px;">{row['Summary']}</p>
-                <a href="{row['Link']}" target="_blank">View Official Source</a>
-            </div>
-        """
-        
-        folium.CircleMarker(
-            location=[row['Lat'], row['Lon']],
-            radius=8,
-            color=color,
-            fill=True,
-            fill_opacity=0.6,
-            popup=folium.Popup(popup_content, max_width=250),
-            tooltip=location_text
-        ).add_to(m)
-    
-    st_folium(m, width="100%", height=500)
-
-# 5. The Searchable Table
-st.subheader("Legislative Records")
-search = st.text_input("🔍 Search by City, State, or Keyword (e.g. 'El Paso' or 'Lot Split')")
-
-if search:
-    table_df = filtered_df[filtered_df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
-else:
-    table_df = filtered_df
-
-st.dataframe(
-    table_df[['State', 'City', 'Identifier', 'Theme', 'Status', 'Summary', 'Link', 'Source']],
-    column_config={"Link": st.column_config.LinkColumn("Link")},
-    use_container_width=True,
-    hide_index=True
-)
+        <b>{row['Identifier']} ({row['State']})</b><br>
+        <i>{row['Status']}</i><br><br>
+        {row['Summary']}<br><br>
+        <a href="{row['Link']}" target="_blank
