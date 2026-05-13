@@ -35,7 +35,7 @@ search_query = st.sidebar.text_input("Search Summary or Identifier", "")
 all_states = sorted(df['State'].unique().tolist())
 selected_states = st.sidebar.multiselect("Select States", options=all_states, default=all_states)
 
-# Status Multi-select (The requested update)
+# Status Multi-select
 all_statuses = sorted(df['Status'].unique().astype(str).tolist())
 selected_statuses = st.sidebar.multiselect("Select Bill Status", options=all_statuses, default=all_statuses)
 
@@ -67,12 +67,37 @@ with col3:
 # 6. The Map
 st.subheader("Geospatial View")
 if not filtered_df.empty:
-    # Center map on the average coordinates of the filtered set
+    # Center map on the average coordinates of the US
     m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="cartodbpositron")
     
     for _, row in filtered_df.iterrows():
-        popup_content = f"""
+        # Corrected popup string formatting
+        popup_html = f"""
         <b>{row['Identifier']} ({row['State']})</b><br>
         <i>{row['Status']}</i><br><br>
         {row['Summary']}<br><br>
-        <a href="{row['Link']}" target="_blank
+        <a href="{row['Link']}" target="_blank">View Full Bill Text</a>
+        """
+        folium.Marker(
+            location=[row['Lat'], row['Lon']],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{row['State']}: {row['Identifier']}"
+        ).add_to(m)
+    
+    st_folium(m, width=1400, height=600, returned_objects=[])
+else:
+    st.warning("No data found matching those filters. Try broadening your search.")
+
+# 7. Data Table View
+st.subheader("Legislative Detail Table")
+st.dataframe(
+    filtered_df[['State', 'Identifier', 'Status', 'Theme', 'Summary', 'Link']],
+    column_config={
+        "Link": st.column_config.LinkColumn("LegiScan Link")
+    },
+    use_container_width=True,
+    hide_index=True
+)
+
+st.markdown("---")
+st.caption("Data source: LegiScan API. Updates occur monthly.")
