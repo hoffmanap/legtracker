@@ -6,7 +6,7 @@ import time
 # 1. Configuration & API Keys
 LEGISCAN_KEY = os.getenv('LEGISCAN_API_KEY')
 
-# Standard center points for all states
+# Use your existing dictionary as the master list of jurisdictions to scan
 STATE_COORDS = {
     'AL': [32.806671, -86.79113], 'AK': [61.370716, -152.404419], 'AZ': [33.729759, -111.431221],
     'AR': [34.969704, -92.373123], 'CA': [36.116203, -119.681564], 'CO': [39.059811, -105.311104],
@@ -28,40 +28,32 @@ STATE_COORDS = {
     'PR': [18.220800, -66.590100]
 }
 
-def get_all_state_sessions():
-    if not LEGISCAN_KEY:
-        print("CRITICAL: LEGISCAN_API_KEY is missing from environment secrets.")
-        return {}
-    url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getDatasetList"
-    try:
-        res = requests.get(url).json()
-        datasets = res.get('datasetlist', [])
-        latest_sessions = {}
-        for d in datasets:
-            state = d['state']
-            if state not in latest_sessions:
-                latest_sessions[state] = d['session_id']
-        return latest_sessions
-    except Exception as e:
-        print(f"Error fetching state list: {e}")
-        return {}
-
-def fetch_legiscan_master_list(state, session_id):
-    url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&id={session_id}"
+def fetch_by_state(state_code):
+    """Fetches the Master List for a state directly by its 2-letter code."""
+    # This operation uses getMasterList with state instead of session_id
+    url = f"https://api.legiscan.com/?key={LEGISCAN_KEY}&op=getMasterList&state={state_code}"
     bills = []
-    keywords = ['zoning', 'accessory dwelling', 'adu', 'lot split', 'middle housing', 
-                'parking', 'building code', 'density', 'transit oriented']
+    keywords = [
+        'zoning', 'accessory dwelling', 'adu', 'lot split', 
+        'middle housing', 'parking', 'building code', 'density'
+    ]
+    
     try:
         res = requests.get(url).json()
+        if res.get('status') == 'ERROR':
+            print(f"  LegiScan Error for {state_code}: {res.get('alert', {}).get('message')}")
+            return []
+            
         masterlist = res.get('masterlist', {})
         for idx in masterlist:
             if idx == 'session': continue
             item = masterlist[idx]
             content = f"{item.get('title', '')} {item.get('description', '')}".lower()
+            
             if any(k in content for k in keywords):
-                coords = STATE_COORDS.get(state, [39.8283, -98.5795])
+                coords = STATE_COORDS.get(state_code)
                 bills.append({
-                    'State': state,
+                    'State': state_code,
                     'Identifier': item.get('number'),
                     'Theme': 'Housing Policy',
                     'Summary': item.get('title'),
@@ -69,31 +61,36 @@ def fetch_legiscan_master_list(state, session_id):
                     'Link': item.get('url'),
                     'Lat': coords[0],
                     'Lon': coords[1],
-                    'Source': f'LegiScan {state}'
+                    'Source': f'LegiScan {state_code}'
                 })
         return bills
     except Exception as e:
-        print(f"Warning: Could not process {state}: {e}")
+        print(f"  Connection Error for {state_code}: {e}")
         return []
 
 if __name__ == "__main__":
+    if not LEGISCAN_KEY:
+        print("CRITICAL: LEGISCAN_API_KEY secret is missing.")
+        exit(1)
+
     file_path = 'legislation_master.csv'
-    session_map = get_all_state_sessions()
-    print(f"Session Map generated. Found {len(session_map)} jurisdictions.")
-    
     all_rows = []
-    for state, s_id in session_map.items():
-        print(f"Checking {state}...")
-        found_bills = fetch_legiscan_master_list(state, s_id)
-        if found_bills:
-            print(f"  --> Found {len(found_bills)} bills in {state}")
-            all_rows.extend(found_bills)
-        time.sleep(0.2)
+    
+    print(f"Starting national sweep for {len(STATE_COORDS)} states/territories...")
+    
+    for state in STATE_COORDS.keys():
+        print(f"Scanning {state}...")
+        found = fetch_by_state(state)
+        if found:
+            print(f"  --> Success: {len(found)} matches.")
+            all_rows.extend(found)
+        # Slower rate limit (0.5s) to be safe with the public API
+        time.sleep(0.5)
     
     if all_rows:
         new_df = pd.DataFrame(all_rows)
-        # We save a completely fresh file to ensure the national sweep is captured
+        # Drop duplicates based on the link (URL is the most unique identifier)
         new_df.drop_duplicates(subset=['Link']).to_csv(file_path, index=False)
-        print(f"SUCCESS: Wrote {len(new_df)} bills to {file_path}")
+        print(f"\n✅ SWEEP COMPLETE: Wrote {len(new_df)} bills to {file_path}")
     else:
-        print("No bills matched keywords in any state.")
+        print("\n❌ FAILED: No matches found in any state. Check keywords or API Key.")
