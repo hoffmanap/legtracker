@@ -18,8 +18,10 @@ def load_data():
         # Ensure coordinates are numeric
         df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
         df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
+        # Filter out rows without valid coordinates
         return df.dropna(subset=['Lat', 'Lon'])
     except FileNotFoundError:
+        # Fallback for empty database
         return pd.DataFrame(columns=['State', 'Identifier', 'Theme', 'Summary', 'Status', 'Link', 'Lat', 'Lon', 'Source'])
 
 df = load_data()
@@ -62,42 +64,20 @@ with col1:
 with col2:
     st.metric("Total Items", len(filtered_df))
 with col3:
-    st.metric("Most Common Status", filtered_df['Status'].value_counts().idxmax() if not filtered_df.empty else "N/A")
+    # Safely find the most common status
+    if not filtered_df.empty:
+        common_status = filtered_df['Status'].value_counts().idxmax()
+    else:
+        common_status = "N/A"
+    st.metric("Most Common Status", common_status)
 
-# 6. The Map
+# 6. The Map (Fixed with CircleMarkers)
 st.subheader("Geospatial View")
 if not filtered_df.empty:
     # Center map on the average coordinates of the US
     m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="cartodbpositron")
     
     for _, row in filtered_df.iterrows():
-        # Corrected popup string formatting
+        # Setup the HTML popup
         popup_html = f"""
-        <b>{row['Identifier']} ({row['State']})</b><br>
-        <i>{row['Status']}</i><br><br>
-        {row['Summary']}<br><br>
-        <a href="{row['Link']}" target="_blank">View Full Bill Text</a>
-        """
-        folium.Marker(
-            location=[row['Lat'], row['Lon']],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{row['State']}: {row['Identifier']}"
-        ).add_to(m)
-    
-    st_folium(m, width=1400, height=600, returned_objects=[])
-else:
-    st.warning("No data found matching those filters. Try broadening your search.")
-
-# 7. Data Table View
-st.subheader("Legislative Detail Table")
-st.dataframe(
-    filtered_df[['State', 'Identifier', 'Status', 'Theme', 'Summary', 'Link']],
-    column_config={
-        "Link": st.column_config.LinkColumn("LegiScan Link")
-    },
-    use_container_width=True,
-    hide_index=True
-)
-
-st.markdown("---")
-st.caption("Data source: LegiScan API. Updates occur monthly.")
+        <div style="font-family: sans-serif; min-width: 2
